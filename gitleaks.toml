@@ -1,0 +1,42 @@
+# Org gitleaks rules: the default set plus credentials it misses.
+# Used by pr-checks.yml (every PR into main) and by the compliance repo's
+# secret sweep (every branch of every repo, every 15 minutes).
+# A false positive goes in the repo's own .gitleaksignore, by fingerprint.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "http-basic-auth-header"
+description = "HTTP Basic credentials (e.g. an Authorization header in a Logpush or webhook config)"
+regex = '''(?i)authorization["'\s]*[:=]?["'\s]*(?:basic)(?:\s+|%20)([A-Za-z0-9+/]{12,}={0,2})'''
+secretGroup = 1
+entropy = 3.0
+keywords = ["authorization"]
+
+[[rules]]
+id = "url-userinfo-password"
+description = "Password in a URL (scheme://user:password@host)"
+regex = '''(?i)\b[a-z][a-z0-9+.-]{1,20}://[^/\s:@'"]{1,64}:([^/\s@'"]{6,128})@[a-z0-9.-]+'''
+secretGroup = 1
+entropy = 3.0
+keywords = ["://"]
+
+# Placeholders in docs, examples and tests: a value that says it is not a
+# real secret. Matched against the secret only, so a real key on the same
+# line is still reported.
+[[allowlists]]
+description = "placeholder values"
+regexTarget = "secret"
+regexes = [
+  '''(?i)(your|my)[_-]?(api[_-]?)?(key|token|secret|password|session)''',
+  '''(?i)(_here|example|placeholder|changeme|dummy|redacted|sample)''',
+  '''(?i)^(x{4,}|\*{4,}|\.{3,}|0{8,}|test|fake[_a-z0-9-]*|<[^>]+>)$''',
+  '''^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$''',
+  '''^\{\{.*\}\}$''',
+  # Test keys that say so: AKIDtestsecret..., testSecretKey..., and the
+  # same word base64-encoded ("test" is dGVzd).
+  '''(?i)test[_-]?(secret|key|token|access|acce|pass|cred)''',
+  '''(?i)^(test|fake|mock|dummy)''',
+  '''^dGVzd''',
+]

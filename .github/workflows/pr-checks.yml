@@ -1,6 +1,11 @@
 # Required on every PR into main, in every repo (org ruleset "Protect main
 # branch", rule "workflows"). A leaked secret fails the PR; dependency
 # findings are reported only, so old findings don't block promotion.
+#
+# Two secret scanners: Trivy reads the tree as it is, gitleaks reads every
+# commit of the PR, so a secret added and removed again inside the PR is
+# still caught. Pushes that never go through a PR (dev, bot branches) are
+# covered by the secret sweep in the compliance repo.
 name: PR checks
 
 on:
@@ -23,6 +28,31 @@ jobs:
           scanners: secret
           exit-code: 1
           format: table
+
+  gitleaks:
+    name: secret scan (commits)
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gl.tgz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gl.tgz" | sha256sum -c -
+          tar xzf "$RUNNER_TEMP/gl.tgz" -C "$RUNNER_TEMP" gitleaks
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.toml" https://raw.githubusercontent.com/inference-sh/.github/main/gitleaks.toml
+      - name: Scan the PR's commits
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          "$RUNNER_TEMP/gitleaks" git . --config "$RUNNER_TEMP/gitleaks.toml" \
+            --log-opts="$BASE..$HEAD" --redact --no-banner --verbose --exit-code 1
 
   dependencies:
     name: dependency scan (report only)
