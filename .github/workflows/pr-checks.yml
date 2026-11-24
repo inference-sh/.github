@@ -1,6 +1,7 @@
 # Required on every PR into main, in every repo (org ruleset "Protect main
 # branch", rule "workflows"). A leaked secret fails the PR; dependency
-# findings are reported only, so old findings don't block promotion.
+# findings (Trivy, govulncheck) are reported only, so old findings don't block
+# promotion.
 #
 # Two secret scanners: Trivy reads the tree as it is, gitleaks reads every
 # commit of the PR, so a secret added and removed again inside the PR is
@@ -67,3 +68,53 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: 0
           format: table
+
+  # govulncheck reports only the known Go vulnerabilities the code can reach
+  # (call graph), in every Go module of the repo, including the standard
+  # library of the module's Go version. Report only, like the dependency scan:
+  # findings show as a warning and in the job summary, the PR is not blocked.
+  govulncheck:
+    name: Go vulnerabilities (report only)
+    runs-on: ubuntu-latest
+    env:
+      GOVULNCHECK_VERSION: v1.9.0
+      GOTOOLCHAIN: auto
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Find Go modules
+        id: mods
+        run: |
+          mods=$(git ls-files | grep -E '(^|/)go\.mod$' | grep -vE '(^|/)(vendor|testdata)/' | xargs -r -n1 dirname | sort -u | tr '\n' ' ')
+          echo "dirs=$mods" >> "$GITHUB_OUTPUT"
+          [ -n "$mods" ] || echo "No Go module in this repo." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.mods.outputs.dirs != ''
+        with:
+          go-version: stable
+          cache: false
+      - name: govulncheck
+        if: steps.mods.outputs.dirs != ''
+        env:
+          DIRS: ${{ steps.mods.outputs.dirs }}
+        run: |
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          gvc="$(go env GOPATH)/bin/govulncheck"
+          found=0
+          for d in $DIRS; do
+            echo "::group::$d"
+            rc=0
+            (cd "$d" && "$gvc" ./...) > "$RUNNER_TEMP/out.txt" 2>&1 || rc=$?
+            cat "$RUNNER_TEMP/out.txt"
+            echo "::endgroup::"
+            case $rc in
+              0) echo "- \`$d\`: no reachable vulnerabilities" >> "$GITHUB_STEP_SUMMARY" ;;
+              3) found=1
+                 echo "::warning title=govulncheck::$d: reachable Go vulnerabilities (see the log)"
+                 { echo "- \`$d\`: **reachable vulnerabilities**"; echo '```'; grep -E '^(Vulnerability #|[[:space:]]+(Found in|Fixed in):)' "$RUNNER_TEMP/out.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY" ;;
+              *) echo "::warning title=govulncheck::$d: govulncheck failed (exit $rc, see the log)"
+                 echo "- \`$d\`: govulncheck failed (exit $rc)" >> "$GITHUB_STEP_SUMMARY" ;;
+            esac
+          done
+          [ "$found" = 0 ] || echo "Reachable vulnerabilities found: update the module or the Go version named in 'Fixed in'."
